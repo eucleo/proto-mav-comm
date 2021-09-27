@@ -1,0 +1,41 @@
+
+[package]
+name = "proto_mav_comm"
+version = "0.10.0"
+authors = ["Todd Stellanova", "Michal Podhradsky", "Kevin Mehall", "Tim Ryan", "Patrick José Pereira", "Ibiyemi Abiodun"]
+description = "Implements the MAVLink data interchange format for UAVs."
+readme = "README.md"
+license = "MIT/Apache-2.0"
+repository = "https://github.com/eucleo/proto-mav-comm"
+edition = "2018"
+
+#[[bin]]
+#name = "mavlink-dump"
+#required-features = ["ardupilotmega"]
+
+[dependencies]
+crc-any = "2.3.5"
+bytes = { version = "1.0", default-features = false }
+num-traits = { version = "0.2", default-features = false }
+num-derive = "0.3.2"
+bitflags = "1.2.1"
+serial = { version = "0.4", optional = true }
+#serde = { version = "1.0.115", optional = true }
+serde = { version = "1", optional = true, features = ["derive"] }
+byteorder = { version = "1.3.4", default-features = false }
+embedded-hal = { version = "0.2", optional = true }
+nb = { version = "0.1", optional = true }
+#proto_mav_gen = { path = "../proto-mav/proto-mav-gen" }
+
+prost = "0.8"
+# Only necessary if using Protobuf well-known types:
+#prost-types = "0.8"
+
+[features]
+"std" = ["byteorder/std"]
+"udp" = []
+"tcp" = []
+"direct-serial" = []
+"embedded" = ["embedded-hal", "nb"]
+default= ["std", "tcp", "udp", "direct-serial", "serial", "serde"]
+
