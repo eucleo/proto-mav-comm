@@ -10,6 +10,7 @@ pub enum ParserError {
     InvalidFlag { flag_type: String, value: u32 },
     InvalidEnum { enum_type: String, value: u32 },
     UnknownMessage { id: u32 },
+    ProstDecode { error: prost::DecodeError },
 }
 
 impl Display for ParserError {
@@ -26,6 +27,7 @@ impl Display for ParserError {
                 enum_type, value
             ),
             ParserError::UnknownMessage { id } => write!(f, "Unknown message with ID {:?}", id),
+            ParserError::ProstDecode { error } => write!(f, "{}", error),
         }
     }
 }
