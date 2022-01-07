@@ -28,6 +28,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use core::result::Result;
+use std::cmp::min;
 
 #[cfg(feature = "std")]
 use std::io::{Read, Write};
@@ -54,6 +55,7 @@ extern crate num_derive;
 extern crate num_traits;
 
 use crc_any::CRCu16;
+use log::trace;
 
 pub mod error;
 
@@ -63,8 +65,8 @@ mod embedded;
 use embedded::{Read, Write};
 
 pub trait Message
-where
-    Self: Sized,
+    where
+        Self: Sized,
 {
     fn message_id(&self) -> u32;
     fn message_name(&self) -> &'static str;
@@ -119,6 +121,93 @@ impl Default for MavHeader {
         }
     }
 }
+
+pub struct TrackingReader<R: Read> {
+    stream: R,
+    packet_buf: [u8; 293],
+    write_pos: usize,
+    read_pos: usize,
+    tracking: bool
+}
+
+impl<R: Read> TrackingReader<R> {
+    fn new(stream: R) -> Self {
+        return Self {
+            stream,
+            packet_buf: [0; 293],
+            write_pos: 0,
+            read_pos: 0,
+            tracking: false
+        }
+    }
+
+    fn track(&mut self) {
+        if self.tracking {
+            // if I was already tracking I should reset beyond the read pos
+            self.packet_buf.copy_within(self.read_pos .. self.write_pos, 0);
+            self.write_pos -= self.read_pos;
+            self.read_pos = 0;
+        }
+        self.tracking = true;
+    }
+
+    fn reset_to(&mut self, byte: u8) -> i32 {
+        let mut new_pos: i32 = -1;
+        for (i, b) in self.packet_buf.iter().enumerate() {
+            if i >= self.write_pos {
+                break;
+            } else if *b == byte {
+                new_pos = i as i32;
+                break;
+            }
+        }
+
+        if new_pos == -1 {
+            self.tracking = false;
+            self.write_pos = 0;
+            self.read_pos = 0;
+        } else {
+            let new_pos = new_pos as usize;
+            self.packet_buf.copy_within(new_pos .. self.write_pos, 0);
+            self.write_pos -= new_pos;
+            self.read_pos = 0;
+        }
+
+        return new_pos;
+    }
+}
+
+impl<R: Read> Read for TrackingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, std::io::Error> {
+        let mut len = 0;
+        let mut buf_ref = buf;
+        if self.read_pos < self.write_pos {
+            let end_offset = min(self.read_pos + buf_ref.len(), self.write_pos);
+
+            let src = &self.packet_buf[self.read_pos.. end_offset];
+            let dest = &mut buf_ref[0 .. src.len()];
+            dest.copy_from_slice(src);
+
+            len += end_offset - self.read_pos;
+            self.read_pos = end_offset;
+            buf_ref = &mut buf_ref[len .. ];
+        }
+        if buf_ref.len() > 0 {
+            if self.tracking {
+                let packet_buf_ref = &mut self.packet_buf[self.write_pos.. self.write_pos + buf_ref.len()];
+                let packet_buf_len = self.stream.read(packet_buf_ref)?;
+                self.write_pos += packet_buf_len;
+                self.read_pos = self.write_pos;
+                buf_ref.copy_from_slice(packet_buf_ref);
+                len += packet_buf_len;
+            } else {
+                len += self.stream.read(buf_ref)?;
+            }
+        }
+        return Ok(len);
+    }
+}
+
 
 /// Encapsulation of the Mavlink message and the header,
 /// important to preserve information about the sender system
@@ -214,10 +303,12 @@ pub fn read_versioned_msg<M: Message, R: Read>(
 pub fn read_v1_msg<M: Message, R: Read>(
     r: &mut R,
 ) -> Result<(MavHeader, M), error::MessageReadError> {
+    let mut r = TrackingReader::new(r);
     loop {
         if r.read_u8()? != MAV_STX {
             continue;
         }
+        r.track(); // start tracking
         let len = r.read_u8()? as usize;
         let seq = r.read_u8()?;
         let sysid = r.read_u8()?;
@@ -238,7 +329,9 @@ pub fn read_v1_msg<M: Message, R: Read>(
         let recvd_crc = crc_calc.get_crc();
         if recvd_crc != crc {
             // bad crc: ignore message
-            //println!("msg id {} len {} , crc got {} expected {}", msgid, len, crc, recvd_crc );
+            let new_pos = r.reset_to(MAV_STX);
+            trace!("msg id {} payload_len {}, crc got {} expected {} reset to {}",
+                msgid, len, crc, recvd_crc, new_pos);
             continue;
         }
 
@@ -263,28 +356,30 @@ const MAVLINK_IFLAG_SIGNED: u8 = 0x01;
 pub fn read_v2_msg<M: Message, R: Read>(
     r: &mut R,
 ) -> Result<(MavHeader, M), error::MessageReadError> {
+    let mut r = TrackingReader::new(r);
     loop {
         // search for the magic framing value indicating start of mavlink message
         if r.read_u8()? != MAV_STX_V2 {
             continue;
         }
+        r.track();
 
-        //        println!("Got STX2");
+               // println!("Got STX2");
         let payload_len = r.read_u8()? as usize;
-        //        println!("Got payload_len: {}", payload_len);
+               // println!("Got payload_len: {}", payload_len);
         let incompat_flags = r.read_u8()?;
-        //        println!("Got incompat flags: {}", incompat_flags);
+               // println!("Got incompat flags: {}", incompat_flags);
         let compat_flags = r.read_u8()?;
-        //        println!("Got compat flags: {}", compat_flags);
+               // println!("Got compat flags: {}", compat_flags);
 
         let seq = r.read_u8()?;
-        //        println!("Got seq: {}", seq);
+               // println!("Got seq: {}", seq);
 
         let sysid = r.read_u8()?;
-        //        println!("Got sysid: {}", sysid);
+               // println!("Got sysid: {}", sysid);
 
         let compid = r.read_u8()?;
-        //        println!("Got compid: {}", compid);
+               // println!("Got compid: {}", compid);
 
         let mut msgid_buf = [0; 4];
         msgid_buf[0] = r.read_u8()?;
@@ -304,7 +399,7 @@ pub fn read_v2_msg<M: Message, R: Read>(
         ];
 
         let msgid: u32 = u32::from_le_bytes(msgid_buf);
-        //        println!("Got msgid: {}", msgid);
+               // println!("Got msgid: {}", msgid);
 
         //provide a buffer that is the maximum payload size
         let mut payload_buf = [0; 255];
@@ -328,7 +423,9 @@ pub fn read_v2_msg<M: Message, R: Read>(
         let recvd_crc = crc_calc.get_crc();
         if recvd_crc != crc {
             // bad crc: ignore message
-            // println!("msg id {} payload_len {} , crc got {} expected {}", msgid, payload_len, crc, recvd_crc );
+            let new_pos = r.reset_to(MAV_STX_V2);
+            trace!("msg id {} payload_len {} , crc got {} expected {} reset to {}",
+                msgid, payload_len, crc, recvd_crc, new_pos);
             continue;
         }
 
